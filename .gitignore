@@ -1,0 +1,53 @@
+# Byte-compiled / __pycache__
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Dados (manter estrutura, ignorar conteúdo)
+data/raw/*
+data/processed/*
+data/gold/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/gold/.gitkeep
+
+# Logs e cache
+logs/
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+nul

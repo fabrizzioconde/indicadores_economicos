@@ -1,0 +1,10 @@
+# Dependências mínimas para macro_insights_mvp (Python >= 3.12)
+# Alternativa ao pyproject.toml: pip install -r requirements.txt
+pandas
+numpy
+requests
+python-dateutil
+pyarrow
+streamlit
+plotly
+pytest

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "macro_insights_mvp"
+version = "0.1.0"
+description = "MVP de dashboard de indicadores macroeconômicos (BACEN, IBGE)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas",
+    "numpy",
+    "requests",
+    "python-dateutil",
+    "pyarrow",
+    "streamlit",
+    "plotly",
+    "pytest",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["etl*", "config*", "dash*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "basic: testes básicos de estrutura (em produção use testes mais robustos)",
+]
