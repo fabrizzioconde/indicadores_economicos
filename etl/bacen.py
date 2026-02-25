@@ -246,6 +246,114 @@ def get_ibcbr(
     return fetch_bcb_series(code, start, end)
 
 
+def _read_gold_parquet(path: Path) -> pd.DataFrame | None:
+    """
+    Lê um parquet em data/gold e normaliza a coluna date para datetime.
+    Retorna None se o arquivo não existir ou em caso de erro.
+    """
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_parquet(path)
+        if df.empty:
+            return df
+        if "date" in df.columns:
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"])
+        return df
+    except Exception:
+        return None
+
+
+def _max_date_iso(df: pd.DataFrame) -> str | None:
+    """Retorna a data máxima da coluna date no formato YYYY-MM-DD, ou None se vazio."""
+    if df is None or df.empty or "date" not in df.columns:
+        return None
+    max_val = df["date"].max()
+    if pd.isna(max_val):
+        return None
+    if hasattr(max_val, "strftime"):
+        return max_val.strftime("%Y-%m-%d")
+    return pd.Timestamp(max_val).strftime("%Y-%m-%d")
+
+
+def _fetch_series_incremental(
+    series_code: str,
+    gold_filename: str,
+    default_start: str,
+    end_date: str,
+    gold_dir: Path,
+) -> pd.DataFrame:
+    """
+    Busca série do BACEN de forma incremental: lê o parquet existente em gold,
+    obtém a última data e requisita à API apenas de (última_data + 1 dia) até end_date.
+    Se não houver arquivo existente, faz carga full de default_start até end_date.
+    """
+    path = gold_dir / f"{gold_filename}.parquet"
+    existing = _read_gold_parquet(path)
+    end = (end_date or "").strip() or _today_iso()
+
+    if existing is not None and not existing.empty:
+        max_d = _max_date_iso(existing)
+        if max_d:
+            max_dt = datetime.strptime(max_d[:10], "%Y-%m-%d")
+            start_new = (max_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+            if start_new > end:
+                print(f"[BACEN] Série {series_code} já atualizada até {max_d}; nenhuma requisição.")
+                return existing
+            print(f"[BACEN] Incremental: buscando de {start_new} a {end} (existente até {max_d}).")
+            new_df = fetch_bcb_series(series_code, start_new, end)
+            if new_df.empty:
+                return existing
+            combined = pd.concat([existing, new_df], ignore_index=True)
+            combined = (
+                combined.drop_duplicates(subset=["date"])
+                .sort_values("date")
+                .reset_index(drop=True)
+            )
+            print(f"[BACEN] Série {series_code}: {len(combined)} registros (incl. {len(new_df)} novos).")
+            return combined
+
+    print(f"[BACEN] Sem arquivo em {path}; carga completa.")
+    return fetch_bcb_series(series_code, default_start, end)
+
+
+def get_selic_diaria_incremental(
+    end_date: str | None = None,
+    gold_dir: Path | None = None,
+) -> pd.DataFrame:
+    """
+    Retorna a série SELIC (incremental): lê data/gold/selic.parquet, busca na API
+    apenas os dias após a última data existente e concatena. Evita retrabalho e reduz consumo da API.
+    """
+    gold = gold_dir or GOLD_DIR
+    end = (end_date or "").strip() or DEFAULT_END_DATE or _today_iso()
+    code = BACEN_SERIES.get("selic") or "432"
+    return _fetch_series_incremental(code, "selic", DEFAULT_START_DATE, end, gold)
+
+
+def get_cambio_usdbrl_incremental(
+    end_date: str | None = None,
+    gold_dir: Path | None = None,
+) -> pd.DataFrame:
+    """Retorna a série câmbio USD/BRL de forma incremental (apenas dados novos)."""
+    gold = gold_dir or GOLD_DIR
+    end = (end_date or "").strip() or DEFAULT_END_DATE or _today_iso()
+    code = BACEN_SERIES.get("cambio") or "1"
+    return _fetch_series_incremental(code, "usdbrl", DEFAULT_START_DATE, end, gold)
+
+
+def get_ibcbr_incremental(
+    end_date: str | None = None,
+    gold_dir: Path | None = None,
+) -> pd.DataFrame:
+    """Retorna a série IBC-Br de forma incremental (apenas dados novos)."""
+    gold = gold_dir or GOLD_DIR
+    end = (end_date or "").strip() or DEFAULT_END_DATE or _today_iso()
+    code = BACEN_SERIES.get("ibc_br") or "24364"
+    return _fetch_series_incremental(code, "ibcbr", DEFAULT_START_DATE, end, gold)
+
+
 def save_series_to_parquet(
     df: pd.DataFrame,
     filename: str,

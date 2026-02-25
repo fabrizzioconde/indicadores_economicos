@@ -11,7 +11,7 @@ if not exist "logs" mkdir logs
 echo [%date% %time%] Iniciando ETL diario. >> logs\etl_daily.log
 
 call .venv\Scripts\activate.bat
-python run_etl.py --mode full >> logs\etl_daily.log 2>&1
+python run_etl.py --mode full --incremental >> logs\etl_daily.log 2>&1
 set EXIT_CODE=%ERRORLEVEL%
 
 echo [%date% %time%] ETL finalizado com codigo %EXIT_CODE%. >> logs\etl_daily.log

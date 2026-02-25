@@ -11,7 +11,7 @@ mkdir -p logs
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] Iniciando ETL diário." >> logs/etl_daily.log
 
 source .venv/bin/activate
-python run_etl.py --mode full >> logs/etl_daily.log 2>&1
+python run_etl.py --mode full --incremental >> logs/etl_daily.log 2>&1
 EXIT_CODE=$?
 
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] ETL finalizado com código $EXIT_CODE." >> logs/etl_daily.log

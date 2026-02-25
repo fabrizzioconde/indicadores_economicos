@@ -119,6 +119,16 @@ Para atualizar apenas SELIC, câmbio e IPCA (útil para testar sem esperar todas
 python run_etl.py --mode minimal
 ```
 
+### Modo incremental (apenas dados novos)
+
+Para **não retrabalhar** e **reduzir o consumo da API**: o ETL lê o último parquet em `data/gold`, obtém a última data/mês e requisita às APIs (BACEN e IBGE) **somente os dados a partir do dia/mês seguinte**. Ideal para agendamento diário.
+
+```bash
+python run_etl.py --mode full --incremental
+```
+
+Ou com modo mínimo: `python run_etl.py --mode minimal --incremental`. Os scripts de automação diária (`run_etl_daily.bat` e `run_etl_daily.sh`) já usam `--incremental` por padrão.
+
 ---
 
 ## Atualização diária automática

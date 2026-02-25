@@ -25,6 +25,7 @@ if __name__ == "__main__":
 from config.settings import (
     DEFAULT_END_MONTH,
     DEFAULT_START_MONTH,
+    GOLD_DIR,
     IBGE_IPCA_CONFIG,
 )
 from etl.bacen import save_series_to_parquet
@@ -36,6 +37,55 @@ SOURCE_LABEL = "IBGE_IPCA"
 REQUEST_TIMEOUT = 60
 REQUEST_RETRIES = 3
 RETRY_SLEEP_SECONDS = 3
+
+
+def _ensure_date_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Garante que o DataFrame tenha coluna 'date' (datetime). Aceita 'data' como alias."""
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    if "date" not in df.columns and "data" in df.columns:
+        df = df.rename(columns={"data": "date"})
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def _max_month_from_parquet(gold_dir: Path, filename: str) -> str | None:
+    """
+    Retorna o mês (YYYY-MM) da última data no parquet em gold_dir, ou None se não existir/vazio.
+    Usado para carga incremental: buscar apenas a partir do mês seguinte.
+    """
+    path = gold_dir / f"{filename}.parquet"
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_parquet(path)
+        if df.empty or "date" not in df.columns:
+            return None
+        # Garante coluna date para evitar KeyError em parquets com schema antigo
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+        if df["date"].isna().all():
+            return None
+        max_val = df["date"].max()
+        if pd.isna(max_val):
+            return None
+        return pd.Timestamp(max_val).strftime("%Y-%m")
+    except Exception:
+        return None
+
+
+def _next_month(ym: str) -> str:
+    """Retorna o mês seguinte a YYYY-MM no formato YYYY-MM."""
+    if not ym or len(ym) < 7:
+        return ym
+    year, month = int(ym[:4]), int(ym[5:7])
+    if month == 12:
+        return f"{year + 1}-01"
+    return f"{year}-{month + 1:02d}"
 
 
 def _month_to_period(ym: str) -> str:
@@ -208,6 +258,83 @@ def get_ipca_mensal(
     start = start_date or DEFAULT_START_MONTH
     end = end_date or DEFAULT_END_MONTH
     return fetch_ibge_ipca_series("IPCA", start, end)
+
+
+def get_ipca_mensal_incremental(
+    end_month: str | None = None,
+    gold_dir: Path | None = None,
+) -> pd.DataFrame:
+    """
+    Retorna a série IPCA de forma incremental: lê data/gold/ipca.parquet,
+    obtém o último mês e requisita à API apenas a partir do mês seguinte.
+    """
+    gold = gold_dir or GOLD_DIR
+    end = (end_month or "").strip() or DEFAULT_END_MONTH or datetime.now().strftime("%Y-%m")
+    max_ym = _max_month_from_parquet(gold, "ipca")
+    if max_ym:
+        start_new = _next_month(max_ym)
+        if start_new > end:
+            df = _ensure_date_column(pd.read_parquet(gold / "ipca.parquet"))
+            print(f"[IBGE] IPCA já atualizado até {max_ym}; nenhuma requisição.")
+            return df
+        print(f"[IBGE] Incremental IPCA: de {start_new} a {end} (existente até {max_ym}).")
+        new_df = fetch_ibge_ipca_series("IPCA", start_new, end)
+        if new_df.empty:
+            return _ensure_date_column(pd.read_parquet(gold / "ipca.parquet"))
+        existing = _ensure_date_column(pd.read_parquet(gold / "ipca.parquet"))
+        if "date" not in existing.columns or "date" not in new_df.columns:
+            return fetch_ibge_ipca_series("IPCA", DEFAULT_START_MONTH, end)
+        try:
+            combined = pd.concat([existing, new_df], ignore_index=True)
+            combined = (
+                combined.drop_duplicates(subset=["date"])
+                .sort_values("date")
+                .reset_index(drop=True)
+            )
+            print(f"[IBGE] IPCA: {len(combined)} registros (incl. {len(new_df)} novos).")
+            return combined
+        except KeyError:
+            print(f"[IBGE] Fallback: carga completa IPCA (erro ao combinar incremental).")
+            return fetch_ibge_ipca_series("IPCA", DEFAULT_START_MONTH, end)
+    print(f"[IBGE] Sem arquivo ipca.parquet em gold; carga completa.")
+    return fetch_ibge_ipca_series("IPCA", DEFAULT_START_MONTH, end)
+
+
+def get_ipca15_mensal_incremental(
+    end_month: str | None = None,
+    gold_dir: Path | None = None,
+) -> pd.DataFrame:
+    """Retorna a série IPCA-15 de forma incremental (apenas meses novos)."""
+    gold = gold_dir or GOLD_DIR
+    end = (end_month or "").strip() or DEFAULT_END_MONTH or datetime.now().strftime("%Y-%m")
+    max_ym = _max_month_from_parquet(gold, "ipca15")
+    if max_ym:
+        start_new = _next_month(max_ym)
+        if start_new > end:
+            df = _ensure_date_column(pd.read_parquet(gold / "ipca15.parquet"))
+            print(f"[IBGE] IPCA-15 já atualizado até {max_ym}; nenhuma requisição.")
+            return df
+        print(f"[IBGE] Incremental IPCA-15: de {start_new} a {end} (existente até {max_ym}).")
+        new_df = fetch_ibge_ipca_series("IPCA15", start_new, end)
+        if new_df.empty:
+            return _ensure_date_column(pd.read_parquet(gold / "ipca15.parquet"))
+        existing = _ensure_date_column(pd.read_parquet(gold / "ipca15.parquet"))
+        if "date" not in existing.columns or "date" not in new_df.columns:
+            return fetch_ibge_ipca_series("IPCA15", DEFAULT_START_MONTH, end)
+        try:
+            combined = pd.concat([existing, new_df], ignore_index=True)
+            combined = (
+                combined.drop_duplicates(subset=["date"])
+                .sort_values("date")
+                .reset_index(drop=True)
+            )
+            print(f"[IBGE] IPCA-15: {len(combined)} registros (incl. {len(new_df)} novos).")
+            return combined
+        except KeyError:
+            print(f"[IBGE] Fallback: carga completa IPCA-15 (erro ao combinar incremental).")
+            return fetch_ibge_ipca_series("IPCA15", DEFAULT_START_MONTH, end)
+    print(f"[IBGE] Sem arquivo ipca15.parquet em gold; carga completa.")
+    return fetch_ibge_ipca_series("IPCA15", DEFAULT_START_MONTH, end)
 
 
 def get_ipca15_mensal(
