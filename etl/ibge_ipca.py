@@ -232,6 +232,10 @@ def fetch_ibge_ipca_series(
             "source": SOURCE_LABEL,
         })
 
+    if not out:
+        print(f"[IBGE] Nenhum dado válido para {key} no período (apenas cabeçalho da API).")
+        return pd.DataFrame(columns=["date", "value", "indicator", "source"])
+
     df = pd.DataFrame(out)
     df = df.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
     print(f"[IBGE] {key}: {len(df)} registros.")
@@ -284,18 +288,14 @@ def get_ipca_mensal_incremental(
         existing = _ensure_date_column(pd.read_parquet(gold / "ipca.parquet"))
         if "date" not in existing.columns or "date" not in new_df.columns:
             return fetch_ibge_ipca_series("IPCA", DEFAULT_START_MONTH, end)
-        try:
-            combined = pd.concat([existing, new_df], ignore_index=True)
-            combined = (
-                combined.drop_duplicates(subset=["date"])
-                .sort_values("date")
-                .reset_index(drop=True)
-            )
-            print(f"[IBGE] IPCA: {len(combined)} registros (incl. {len(new_df)} novos).")
-            return combined
-        except KeyError:
-            print(f"[IBGE] Fallback: carga completa IPCA (erro ao combinar incremental).")
-            return fetch_ibge_ipca_series("IPCA", DEFAULT_START_MONTH, end)
+        combined = pd.concat([existing, new_df], ignore_index=True)
+        combined = (
+            combined.drop_duplicates(subset=["date"])
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+        print(f"[IBGE] IPCA: {len(combined)} registros (incl. {len(new_df)} novos).")
+        return combined
     print(f"[IBGE] Sem arquivo ipca.parquet em gold; carga completa.")
     return fetch_ibge_ipca_series("IPCA", DEFAULT_START_MONTH, end)
 
@@ -321,18 +321,14 @@ def get_ipca15_mensal_incremental(
         existing = _ensure_date_column(pd.read_parquet(gold / "ipca15.parquet"))
         if "date" not in existing.columns or "date" not in new_df.columns:
             return fetch_ibge_ipca_series("IPCA15", DEFAULT_START_MONTH, end)
-        try:
-            combined = pd.concat([existing, new_df], ignore_index=True)
-            combined = (
-                combined.drop_duplicates(subset=["date"])
-                .sort_values("date")
-                .reset_index(drop=True)
-            )
-            print(f"[IBGE] IPCA-15: {len(combined)} registros (incl. {len(new_df)} novos).")
-            return combined
-        except KeyError:
-            print(f"[IBGE] Fallback: carga completa IPCA-15 (erro ao combinar incremental).")
-            return fetch_ibge_ipca_series("IPCA15", DEFAULT_START_MONTH, end)
+        combined = pd.concat([existing, new_df], ignore_index=True)
+        combined = (
+            combined.drop_duplicates(subset=["date"])
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+        print(f"[IBGE] IPCA-15: {len(combined)} registros (incl. {len(new_df)} novos).")
+        return combined
     print(f"[IBGE] Sem arquivo ipca15.parquet em gold; carga completa.")
     return fetch_ibge_ipca_series("IPCA15", DEFAULT_START_MONTH, end)
 
