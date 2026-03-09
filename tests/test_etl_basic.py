@@ -8,6 +8,7 @@ testes de integração, dados fixos) seriam recomendados.
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import ExitStack
 from unittest.mock import patch
 
 import pandas as pd
@@ -33,9 +34,106 @@ def test_ipca_etl_importado() -> None:
     assert callable(run_ipca_etl)
 
 
-def test_run_full_pipeline_executa_sem_erro() -> None:
-    """Executar o pipeline completo não deve levantar exceção (estado atual)."""
-    run_full_pipeline()
+def test_run_full_pipeline_executa_sem_erro(tmp_path: Path) -> None:
+    """
+    Executar o pipeline completo não deve levantar exceção.
+
+    Importante: o pipeline real chama APIs externas (BACEN, IBGE, PDFs), então aqui
+    usamos mocks para garantir que o teste seja determinístico e rápido.
+    """
+    # DataFrames mínimos por "tipo" de série
+    def _make_bacen_df(code: str = "1") -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2020-01-01", "2020-01-02"]),
+                "value": [1.0, 2.0],
+                "series_code": [code, code],
+                "source": ["BACEN_SGS", "BACEN_SGS"],
+            }
+        )
+
+    def _make_ibge_df(ind: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2020-01-01", "2020-02-01"]),
+                "value": [0.1, 0.2],
+                "indicator": [ind, ind],
+                "source": ["IBGE", "IBGE"],
+            }
+        )
+
+    def _make_city_df(ind: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2020-01-01"]),
+                "city": ["São Paulo"],
+                "uf": ["SP"],
+                "value": [50.0],
+                "indicator": [ind],
+                "source": ["SRC"],
+            }
+        )
+
+    def _make_uf_df(ind: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2020-01-01"]),
+                "uf": ["SP"],
+                "value": [100.0],
+                "indicator": [ind],
+                "source": ["SRC"],
+            }
+        )
+
+    def _make_edu_df(ind: str) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2020-01-01"]),
+                "uf": ["BR"],
+                "rede": ["TOTAL"],
+                "modalidade": ["TOTAL"],
+                "area": ["TOTAL"],
+                "value": [123.0],
+                "indicator": [ind],
+                "source": ["SRC"],
+            }
+        )
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("etl.bacen.GOLD_DIR", tmp_path))  # evita sujar gold real
+        stack.enter_context(patch("etl.pipeline.get_selic_diaria", return_value=_make_bacen_df("432")))
+        stack.enter_context(patch("etl.pipeline.get_cambio_usdbrl", return_value=_make_bacen_df("1")))
+        stack.enter_context(patch("etl.pipeline.get_ibcbr", return_value=_make_bacen_df("24364")))
+        stack.enter_context(patch("etl.pipeline.get_focus_ipca12", return_value=_make_bacen_df("27574")))
+        stack.enter_context(patch("etl.pipeline.get_focus_selic", return_value=_make_bacen_df("27573")))
+        stack.enter_context(patch("etl.pipeline.get_reservas", return_value=_make_bacen_df("13982")))
+        stack.enter_context(patch("etl.pipeline.get_ipca_mensal", return_value=_make_ibge_df("IPCA")))
+        stack.enter_context(patch("etl.pipeline.get_ipca15_mensal", return_value=_make_ibge_df("IPCA15")))
+        stack.enter_context(patch("etl.pipeline.get_inpc_mensal", return_value=_make_ibge_df("INPC")))
+        stack.enter_context(patch("etl.pipeline.get_desocupacao_mensal", return_value=_make_ibge_df("DESOCUPACAO")))
+        stack.enter_context(patch("etl.pipeline.get_varejo_restrito_mom_sa", return_value=_make_ibge_df("VAREJO_RESTRITO_MOM_SA")))
+        stack.enter_context(patch("etl.pipeline.get_varejo_ampliado_mom_sa", return_value=_make_ibge_df("VAREJO_AMPLIADO_MOM_SA")))
+        stack.enter_context(patch("etl.pipeline.get_servicos_mom_sa", return_value=_make_ibge_df("SERVICOS_MOM_SA")))
+        stack.enter_context(patch("etl.pipeline.get_fipezap_locacao_preco_m2", return_value=_make_city_df("FIPEZAP_LOCACAO_PRECO_M2")))
+        stack.enter_context(patch("etl.pipeline.get_fipezap_locacao_mom_pct", return_value=_make_city_df("FIPEZAP_LOCACAO_MOM_PCT")))
+        stack.enter_context(patch("etl.pipeline.get_fipezap_venda_preco_m2", return_value=_make_city_df("FIPEZAP_VENDA_PRECO_M2")))
+        stack.enter_context(patch("etl.pipeline.get_fipezap_venda_mom_pct", return_value=_make_city_df("FIPEZAP_VENDA_MOM_PCT")))
+        stack.enter_context(patch("etl.pipeline.get_ivgr", return_value=_make_bacen_df("21340")))
+        stack.enter_context(patch("etl.pipeline.get_credito_imob_saldo_total_pf", return_value=_make_bacen_df("20612")))
+        stack.enter_context(patch("etl.pipeline.get_credito_imob_saldo_mercado_pf", return_value=_make_bacen_df("20611")))
+        stack.enter_context(patch("etl.pipeline.get_credito_imob_concessoes_mercado_pf", return_value=_make_bacen_df("20702")))
+        stack.enter_context(patch("etl.pipeline.get_credito_imob_taxa_juros_mercado_pf", return_value=_make_bacen_df("20772")))
+        stack.enter_context(patch("etl.pipeline.get_credito_imob_inadimplencia_mercado_pf", return_value=_make_bacen_df("21149")))
+        stack.enter_context(patch("etl.pipeline.get_sinapi_custo_m2_uf", return_value=_make_uf_df("SINAPI_CUSTO_M2_RS")))
+        stack.enter_context(patch("etl.pipeline.get_sinapi_var_mensal_uf", return_value=_make_uf_df("SINAPI_VAR_MENSAL_PCT")))
+        stack.enter_context(patch("etl.pipeline.get_sinapi_var_12m_uf", return_value=_make_uf_df("SINAPI_VAR_12M_PCT")))
+        stack.enter_context(patch("etl.pipeline.get_edu_sup_matriculas", return_value=_make_edu_df("EDU_SUP_MATRICULAS")))
+        stack.enter_context(patch("etl.pipeline.get_edu_sup_ingressantes", return_value=_make_edu_df("EDU_SUP_INGRESSANTES")))
+        stack.enter_context(patch("etl.pipeline.get_edu_sup_concluintes", return_value=_make_edu_df("EDU_SUP_CONCLUINTES")))
+        stack.enter_context(patch("etl.pipeline.get_edu_sup_docentes_exercicio", return_value=_make_edu_df("EDU_SUP_DOCENTES_EXERCICIO")))
+        stack.enter_context(patch("etl.pipeline.get_edu_sup_igc_medio", return_value=_make_edu_df("EDU_SUP_IGC_MEDIO")))
+
+        run_full_pipeline()
 
 
 # -----------------------------------------------------------------------------

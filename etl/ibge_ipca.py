@@ -140,7 +140,7 @@ def fetch_ibge_ipca_series(
     date (dia 01 do mês), value, indicator, source.
 
     Args:
-        indicator: Nome do indicador: 'IPCA' ou 'IPCA-15' / 'IPCA15'.
+        indicator: Nome do indicador: 'IPCA', 'IPCA-15' / 'IPCA15' ou 'INPC'.
         start_date: Data inicial no formato 'YYYY-MM'.
         end_date: Data final no formato 'YYYY-MM' (vazio = mês atual).
 
@@ -151,13 +151,19 @@ def fetch_ibge_ipca_series(
         ValueError: Se o indicador não estiver em config ou a resposta não for uma lista.
         requests.RequestException: Em falha de rede ou HTTP.
     """
-    # Normaliza indicador para chave do config (IPCA ou IPCA15)
-    key = "IPCA15" if indicator.upper().replace("-", "") == "IPCA15" else "IPCA"
+    # Normaliza indicador para chave do config (IPCA, IPCA15 ou INPC)
+    ind = indicator.upper().strip().replace("-", "")
+    if ind == "INPC":
+        key = "INPC"
+    elif ind == "IPCA15":
+        key = "IPCA15"
+    else:
+        key = "IPCA"
     config = IBGE_IPCA_CONFIG.get(key)
     if not config:
         raise ValueError(
             f"Indicador '{indicator}' não configurado em config.settings.IBGE_IPCA_CONFIG. "
-            "Use 'IPCA' ou 'IPCA15'."
+            "Use 'IPCA', 'IPCA15' ou 'INPC'."
         )
 
     table = config["table"]
@@ -333,6 +339,53 @@ def get_ipca15_mensal_incremental(
     return fetch_ibge_ipca_series("IPCA15", DEFAULT_START_MONTH, end)
 
 
+def get_inpc_mensal(
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """
+    Retorna a série mensal do INPC (variação mensal %) no Brasil.
+
+    Utiliza a tabela e variável definidas em config.settings.IBGE_IPCA_CONFIG['INPC'].
+    """
+    start = start_date or DEFAULT_START_MONTH
+    end = end_date or DEFAULT_END_MONTH
+    return fetch_ibge_ipca_series("INPC", start, end)
+
+
+def get_inpc_mensal_incremental(
+    end_month: str | None = None,
+    gold_dir: Path | None = None,
+) -> pd.DataFrame:
+    """Retorna a série INPC de forma incremental (apenas meses novos)."""
+    gold = gold_dir or GOLD_DIR
+    end = (end_month or "").strip() or DEFAULT_END_MONTH or datetime.now().strftime("%Y-%m")
+    max_ym = _max_month_from_parquet(gold, "inpc")
+    if max_ym:
+        start_new = _next_month(max_ym)
+        if start_new > end:
+            df = _ensure_date_column(pd.read_parquet(gold / "inpc.parquet"))
+            print(f"[IBGE] INPC já atualizado até {max_ym}; nenhuma requisição.")
+            return df
+        print(f"[IBGE] Incremental INPC: de {start_new} a {end} (existente até {max_ym}).")
+        new_df = fetch_ibge_ipca_series("INPC", start_new, end)
+        if new_df.empty:
+            return _ensure_date_column(pd.read_parquet(gold / "inpc.parquet"))
+        existing = _ensure_date_column(pd.read_parquet(gold / "inpc.parquet"))
+        if "date" not in existing.columns or "date" not in new_df.columns:
+            return fetch_ibge_ipca_series("INPC", DEFAULT_START_MONTH, end)
+        combined = pd.concat([existing, new_df], ignore_index=True)
+        combined = (
+            combined.drop_duplicates(subset=["date"])
+            .sort_values("date")
+            .reset_index(drop=True)
+        )
+        print(f"[IBGE] INPC: {len(combined)} registros (incl. {len(new_df)} novos).")
+        return combined
+    print(f"[IBGE] Sem arquivo inpc.parquet em gold; carga completa.")
+    return fetch_ibge_ipca_series("INPC", DEFAULT_START_MONTH, end)
+
+
 def get_ipca15_mensal(
     start_date: str | None = None,
     end_date: str | None = None,
@@ -361,10 +414,10 @@ def run_ipca_etl(
     layer: str = "gold",
 ) -> None:
     """
-    Executa o ETL do IPCA e do IPCA-15.
+    Executa o ETL do IPCA, IPCA-15 e INPC.
 
-    Busca as duas séries na API SIDRA, normaliza e salva em Parquet
-    (data/gold/ipca.parquet e data/gold/ipca15.parquet) usando a mesma
+    Busca as séries na API SIDRA, normaliza e salva em Parquet
+    (data/gold/ipca.parquet, ipca15.parquet, inpc.parquet) usando a mesma
     função de persistência do módulo BACEN para manter padrão.
 
     Args:
@@ -375,7 +428,11 @@ def run_ipca_etl(
     start = start_date or DEFAULT_START_MONTH
     end = end_date or DEFAULT_END_MONTH
 
-    for name, fetcher in [("ipca", get_ipca_mensal), ("ipca15", get_ipca15_mensal)]:
+    for name, fetcher in [
+        ("ipca", get_ipca_mensal),
+        ("ipca15", get_ipca15_mensal),
+        ("inpc", get_inpc_mensal),
+    ]:
         try:
             df = fetcher(start_date=start, end_date=end)
             if df is not None and not df.empty:

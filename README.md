@@ -32,6 +32,9 @@ macro_insights_mvp/
 │   └── settings.py         # Configurações: códigos de séries, datas padrão, caminhos
 ├── dash/
 │   └── app.py              # Aplicação Streamlit (dashboard com abas)
+├── api/
+│   └── main.py             # API REST FastAPI (consumida pelo frontend React)
+├── data_loader.py          # Módulo compartilhado de leitura de parquets (dash + API)
 ├── data/                   # Dados em camadas (raw → processed → gold)
 │   ├── raw/                # Dados brutos (se necessário no futuro)
 │   ├── processed/          # Dados tratados (intermediários)
@@ -93,7 +96,7 @@ Ou, se preferir instalar o projeto em modo editável (recomendado para desenvolv
 pip install -e .
 ```
 
-As dependências incluem: `pandas`, `numpy`, `requests`, `pyarrow`, `streamlit`, `plotly`, `pytest` (para rodar os testes), entre outras listadas em `requirements.txt` ou `pyproject.toml`. Requer **Python 3.12 ou superior**.
+As dependências incluem: `pandas`, `numpy`, `requests`, `pyarrow`, `streamlit`, `plotly`, `fastapi`, `uvicorn` (para a API REST), `pytest` (para rodar os testes), entre outras listadas em `requirements.txt` ou `pyproject.toml`. Requer **Python 3.12 ou superior**.
 
 ---
 
@@ -229,6 +232,56 @@ O comando deve ser executado na **raiz do projeto** (`macro_insights_mvp`). O na
 - **Aba Atividade**: gráfico do IBC-Br e métrica simples de crescimento ano contra ano.
 
 Se algum arquivo parquet estiver faltando em `data/gold`, o dashboard exibirá um aviso orientando a rodar `python run_etl.py --mode full`.
+
+---
+
+## Três modos de execução
+
+O projeto permite usar os dados de três formas: **dashboard Streamlit** (como acima), **API REST** (para integrações ou frontend customizado) e **app React** (dashboard em tema escuro com gráficos Recharts).
+
+### 1. Dashboard Streamlit (atual)
+
+Na raiz do projeto (`macro_insights_mvp`), com o ambiente ativado:
+
+```bash
+streamlit run dash/app.py
+```
+
+O navegador abrirá em `http://localhost:8501`. Não depende de nenhum outro processo.
+
+### 2. API REST (FastAPI)
+
+A API expõe os indicadores em JSON para o frontend React ou qualquer cliente HTTP.
+
+**Importante:** o comando deve ser executado na pasta **que contém a pasta `api`** (e o arquivo `data_loader.py`). Se aparecer `ModuleNotFoundError: No module named 'api'`, você está em uma pasta interna — suba um nível com `cd ..` e tente de novo.
+
+Na raiz do projeto (`macro_insights_mvp`), com o ambiente ativado:
+
+```bash
+uvicorn api.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+No Git Bash (Windows), se o ambiente já estiver ativado, use barras normais: `uvicorn api.main:app --reload --port 8000`. **Alternativa (Windows):** da raiz do projeto, execute `scripts\run_api.bat` — o script entra na pasta correta e sobe a API.
+
+- **Endpoints:** `GET /api/indicators` (lista de chaves), `GET /api/indicators/{key}?start=...&end=...` (série temporal), `GET /api/kpis` (KPIs agregados), `GET /health` (health check).
+- A API lê os mesmos parquets em `data/gold` que o Streamlit. Atualize os dados com `python run_etl.py --mode full` quando necessário.
+
+### 3. App React (frontend alternativo)
+
+O app React fica na pasta **`macro_insights_web`** (na raiz do repositório, ao lado de `macro_insights_mvp`). Ele consome a API acima.
+
+**Pré-requisito:** a API deve estar rodando (passo 2).
+
+Na pasta `macro_insights_web`:
+
+```bash
+npm install
+npm run dev
+```
+
+O navegador abrirá em `http://localhost:5173`. O Vite faz proxy de `/api` e `/health` para `http://localhost:8000`, então não é obrigatório configurar `VITE_API_URL` em desenvolvimento. Para produção ou outra origem, crie um arquivo `.env` com `VITE_API_URL=http://localhost:8000` (ou a URL da API).
+
+Resumo da ordem para usar o app React: (1) rodar o ETL se precisar atualizar dados; (2) subir a API (`uvicorn api.main:app ...`); (3) subir o React (`npm run dev`).
 
 ---
 

@@ -6,6 +6,7 @@ normaliza datas e valores e salva em parquet.
 """
 from __future__ import annotations
 
+import json
 import sys
 import time
 from datetime import datetime, timedelta
@@ -32,7 +33,11 @@ from config.settings import (
 
 # URL base da API SGS do Banco Central (datas em DD/MM/YYYY)
 BCB_SGS_BASE_URL = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.{code}/dados"
+# API Olinda - Expectativas de Mercado (fallback para FOCUS SELIC quando SGS 27573 falhar)
+_OLINDA_BASE = "https://olinda.bcb.gov.br/olinda/servico/Expectativas/versao/v1/odt/ExpectativasMercadoSelic"
+_OLINDA_ALT = "https://olinda.bcb.gov.br/olinda/service/Expectativas/version/v1/odt/ExpectativasMercadoSelic"
 SOURCE_LABEL = "BACEN_SGS"
+SOURCE_OLINDA = "BACEN_OLINDA"
 # Janela máxima permitida pela API para séries diárias (em anos)
 MAX_YEARS_DAILY_WINDOW = 10
 # Janela usada por requisição (menor = menos dados por chamada, menor risco de timeout)
@@ -42,6 +47,11 @@ REQUEST_TIMEOUT = 90
 # Tentativas e espera entre elas em caso de timeout/erro de conexão
 REQUEST_RETRIES = 3
 RETRY_SLEEP_SECONDS = 5
+# User-Agent para APIs que bloqueiam requisições sem browser (ex.: Olinda)
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+}
 
 
 def _today_iso() -> str:
@@ -246,6 +256,183 @@ def get_ibcbr(
     return fetch_bcb_series(code, start, end)
 
 
+def get_focus_ipca12(
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """
+    Retorna a série de expectativa FOCUS para IPCA 12 meses (%).
+
+    Utiliza o código configurado em config.settings.BACEN_SERIES['focus_ipca12'].
+    """
+    start = start_date or DEFAULT_START_DATE
+    end = end_date or DEFAULT_END_DATE
+    code = BACEN_SERIES.get("focus_ipca12") or "27574"
+    return fetch_bcb_series(code, start, end)
+
+
+def get_reservas(
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """
+    Retorna a série de reservas internacionais (conceito caixa, total, diária).
+
+    Utiliza o código configurado em config.settings.BACEN_SERIES['reservas'].
+    """
+    start = start_date or DEFAULT_START_DATE
+    end = end_date or DEFAULT_END_DATE
+    code = BACEN_SERIES.get("reservas") or "13982"
+    return fetch_bcb_series(code, start, end)
+
+
+def _fetch_focus_selic_olinda(
+    start_date: str,
+    end_date: str,
+) -> pd.DataFrame:
+    """
+    Busca expectativa FOCUS SELIC na API Olinda (Expectativas de Mercado).
+    Retorna DataFrame com colunas date, value, series_code, source.
+    Valor = mediana da expectativa (% a.a.); data = Data da expectativa (reunião).
+    """
+    # Olinda OData: sem $filter primeiro (evita 403 em alguns ambientes); depois filtramos por data
+    params = {
+        "$format": "json",
+        "$orderby": "DataReferencia asc",
+        "$top": "5000",
+    }
+    response = None
+    for base_url in (_OLINDA_BASE, _OLINDA_ALT):
+        try:
+            r = requests.get(base_url, params=params, headers=DEFAULT_HEADERS, timeout=REQUEST_TIMEOUT)
+            response = r
+            if r.status_code == 200:
+                break
+        except Exception:
+            continue
+    if response is None or response.status_code != 200:
+        if response is not None and response.text:
+            print(f"[BACEN] Olinda FOCUS SELIC: HTTP {response.status_code}")
+        return pd.DataFrame(columns=["date", "value", "series_code", "source"])
+    try:
+        body = response.json()
+        raw = body.get("value", body) if isinstance(body, dict) else body
+        if not isinstance(raw, list) or not raw:
+            return pd.DataFrame(columns=["date", "value", "series_code", "source"])
+        rows = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            # Campos possíveis: DataReferencia, Data, DataReuniao, Mediana, media
+            data_ref = item.get("DataReferencia") or item.get("Data") or item.get("data")
+            valor = item.get("Mediana") or item.get("mediana") or item.get("media") or item.get("Media")
+            if data_ref is None or valor is None:
+                continue
+            try:
+                if isinstance(data_ref, str) and "T" in data_ref:
+                    dt = datetime.fromisoformat(data_ref.replace("Z", "+00:00")).replace(tzinfo=None)
+                else:
+                    dt = datetime.strptime(str(data_ref).strip()[:10], "%Y-%m-%d")
+            except (ValueError, TypeError):
+                continue
+            try:
+                v = float(str(valor).replace(",", "."))
+            except (TypeError, ValueError):
+                continue
+            # Filtrar pelo intervalo solicitado
+            if dt < datetime.strptime(start_date[:10], "%Y-%m-%d") or dt > datetime.strptime(end_date[:10], "%Y-%m-%d"):
+                continue
+            # Olinda costuma retornar em % (ex.: 10.25); SGS 27573 em pontos base (1025). Normalizar para bp.
+            if v < 100:
+                v = v * 100.0
+            rows.append({"date": dt, "value": v, "series_code": "27573", "source": SOURCE_OLINDA})
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
+            print(f"[BACEN] FOCUS SELIC (Olinda): {len(df)} registros.")
+        return df if not df.empty else pd.DataFrame(columns=["date", "value", "series_code", "source"])
+    except Exception as e:
+        print(f"[BACEN] Erro ao buscar FOCUS SELIC na Olinda: {e}")
+        return pd.DataFrame(columns=["date", "value", "series_code", "source"])
+
+
+def _fetch_focus_selic_sgs_ultimos(
+    start_date: str,
+    end_date: str,
+    code: str = "27573",
+    n_ultimos: int = 5000,
+) -> pd.DataFrame:
+    """
+    Busca FOCUS SELIC no SGS via endpoint /dados/ultimos/N (às vezes o único que responde para 27573).
+    Filtra o resultado pelo intervalo [start_date, end_date].
+    """
+    url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{code}/dados/ultimos/{n_ultimos}"
+    try:
+        resp = requests.get(url, params={"formato": "json"}, timeout=REQUEST_TIMEOUT)
+        if resp.status_code != 200:
+            return pd.DataFrame(columns=["date", "value", "series_code", "source"])
+        text = (resp.text or "").strip()
+        if not text or (text[0:1] not in ("[", "{")):
+            return pd.DataFrame(columns=["date", "value", "series_code", "source"])
+        data = json.loads(text)
+        if not isinstance(data, list) or not data:
+            return pd.DataFrame(columns=["date", "value", "series_code", "source"])
+        rows = []
+        for item in data:
+            date_str = item.get("data", "")
+            valor = item.get("valor")
+            if not date_str or valor is None:
+                continue
+            try:
+                dt = datetime.strptime(str(date_str).strip()[:10], "%d/%m/%Y")
+            except ValueError:
+                continue
+            try:
+                v = float(str(valor).replace(",", "."))
+            except (TypeError, ValueError):
+                continue
+            rows.append({"date": dt, "value": v, "series_code": code, "source": SOURCE_LABEL})
+        df = pd.DataFrame(rows)
+        if df.empty:
+            return df
+        df = df.drop_duplicates(subset=["date"]).sort_values("date").reset_index(drop=True)
+        start_dt = datetime.strptime(start_date[:10], "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date[:10], "%Y-%m-%d")
+        df = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)]
+        if not df.empty:
+            print(f"[BACEN] FOCUS SELIC (SGS ultimos): {len(df)} registros.")
+        return df
+    except Exception as e:
+        print(f"[BACEN] SGS ultimos (FOCUS SELIC) falhou: {e}")
+        return pd.DataFrame(columns=["date", "value", "series_code", "source"])
+
+
+def get_focus_selic(
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> pd.DataFrame:
+    """
+    Retorna a série de expectativa FOCUS para taxa SELIC (% a.a.).
+    Ordem de tentativa: 1) SGS por período; 2) SGS por ultimos/N; 3) API Olinda.
+    """
+    start = (start_date or DEFAULT_START_DATE).strip()[:10]
+    end = (end_date or DEFAULT_END_DATE).strip() or _today_iso()
+    end = end[:10]
+    code = BACEN_SERIES.get("focus_selic") or "27573"
+    df = pd.DataFrame(columns=["date", "value", "series_code", "source"])
+    try:
+        df = fetch_bcb_series(code, start, end)
+    except Exception as e:
+        print(f"[BACEN] SGS {code} (FOCUS SELIC) falhou: {e}; tentando alternativas.")
+    if df is None or df.empty:
+        df = _fetch_focus_selic_sgs_ultimos(start, end, code=code)
+    if df is None or df.empty:
+        df = _fetch_focus_selic_olinda(start, end)
+    if df is None or df.empty:
+        print("[BACEN] FOCUS SELIC: nenhum dado obtido (SGS 27573 e Olinda). Verifique conectividade com api.bcb.gov.br / olinda.bcb.gov.br.")
+    return df if df is not None and not df.empty else pd.DataFrame(columns=["date", "value", "series_code", "source"])
+
+
 def _read_gold_parquet(path: Path) -> pd.DataFrame | None:
     """
     Lê um parquet em data/gold e normaliza a coluna date para datetime.
@@ -354,6 +541,68 @@ def get_ibcbr_incremental(
     return _fetch_series_incremental(code, "ibcbr", DEFAULT_START_DATE, end, gold)
 
 
+def get_focus_ipca12_incremental(
+    end_date: str | None = None,
+    gold_dir: Path | None = None,
+) -> pd.DataFrame:
+    """Retorna a série FOCUS IPCA 12 meses de forma incremental."""
+    gold = gold_dir or GOLD_DIR
+    end = (end_date or "").strip() or DEFAULT_END_DATE or _today_iso()
+    code = BACEN_SERIES.get("focus_ipca12") or "27574"
+    return _fetch_series_incremental(code, "focus_ipca12", DEFAULT_START_DATE, end, gold)
+
+
+def get_reservas_incremental(
+    end_date: str | None = None,
+    gold_dir: Path | None = None,
+) -> pd.DataFrame:
+    """Retorna a série de reservas internacionais de forma incremental."""
+    gold = gold_dir or GOLD_DIR
+    end = (end_date or "").strip() or DEFAULT_END_DATE or _today_iso()
+    code = BACEN_SERIES.get("reservas") or "13982"
+    return _fetch_series_incremental(code, "reservas", DEFAULT_START_DATE, end, gold)
+
+
+def get_focus_selic_incremental(
+    end_date: str | None = None,
+    gold_dir: Path | None = None,
+) -> pd.DataFrame:
+    """
+    Retorna a série FOCUS SELIC de forma incremental.
+    Usa get_focus_selic (SGS + fallback Olinda) para garantir dados mesmo quando SGS 27573 falha.
+    """
+    gold = gold_dir or GOLD_DIR
+    end = (end_date or "").strip() or DEFAULT_END_DATE or _today_iso()
+    path = gold / "focus_selic.parquet"
+    existing = _read_gold_parquet(path)
+    if existing is not None and not existing.empty:
+        max_d = _max_date_iso(existing)
+        if max_d:
+            max_dt = datetime.strptime(max_d[:10], "%Y-%m-%d")
+            start_new = (max_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+            if start_new > end:
+                print(f"[BACEN] FOCUS SELIC já atualizada até {max_d}; nenhuma requisição.")
+                return existing
+            print(f"[BACEN] FOCUS SELIC incremental: de {start_new} a {end} (existente até {max_d}).")
+            new_df = get_focus_selic(start_date=start_new, end_date=end)
+            if new_df.empty:
+                return existing
+            # Unificar coluna source se Olinda retornar series_code
+            if "series_code" not in new_df.columns and "source" in new_df.columns:
+                new_df = new_df.copy()
+                new_df["series_code"] = "27573"
+            combined = pd.concat([existing, new_df], ignore_index=True)
+            combined = (
+                combined.drop_duplicates(subset=["date"])
+                .sort_values("date")
+                .reset_index(drop=True)
+            )
+            print(f"[BACEN] FOCUS SELIC: {len(combined)} registros (incl. {len(new_df)} novos).")
+            return combined
+    print(f"[BACEN] Sem arquivo em {path}; carga completa FOCUS SELIC.")
+    return get_focus_selic(start_date=DEFAULT_START_DATE, end_date=end)
+
+
 def save_series_to_parquet(
     df: pd.DataFrame,
     filename: str,
@@ -397,7 +646,7 @@ def run_bacen_etl(
     layer: str = "gold",
 ) -> None:
     """
-    Executa o ETL das séries do BACEN (SELIC, câmbio, IBC-Br).
+    Executa o ETL das séries do BACEN (SELIC, câmbio, IBC-Br, FOCUS IPCA 12m, reservas).
 
     Busca cada série na API do Banco Central, normaliza e persiste em Parquet
     na camada indicada (default: gold). Usado pelo pipeline principal.
@@ -414,6 +663,9 @@ def run_bacen_etl(
         ("selic_meta", get_selic_diaria),
         ("cambio_usdbrl", get_cambio_usdbrl),
         ("ibcbr", get_ibcbr),
+        ("focus_ipca12", get_focus_ipca12),
+        ("focus_selic", get_focus_selic),
+        ("reservas", get_reservas),
     ]
     for filename, fetcher in series_fetchers:
         try:

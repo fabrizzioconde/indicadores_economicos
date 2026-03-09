@@ -48,7 +48,7 @@ def main() -> int:
 
     if mode == "full":
         print(
-            "Modo escolhido: full (SELIC, câmbio USD/BRL, IBC-Br, IPCA, IPCA-15)"
+            "Modo escolhido: full (SELIC, câmbio, IBC-Br, FOCUS IPCA, FOCUS SELIC, reservas, IPCA, IPCA-15, INPC, Desocupação, Varejo restrito, Varejo ampliado, Serviços, FipeZAP (locação/venda), IVG-R, Crédito imobiliário, SINAPI, Educação Superior INEP)"
             + (" [incremental]" if incremental else "") + "."
         )
         run_fn = lambda: run_full_etl(incremental=incremental)

@@ -7,4 +7,8 @@ python-dateutil
 pyarrow
 streamlit
 plotly
+fastapi
+uvicorn[standard]
 pytest
+pdfplumber
+openpyxl

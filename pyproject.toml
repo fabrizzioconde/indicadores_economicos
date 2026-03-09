@@ -17,6 +17,10 @@ dependencies = [
     "streamlit",
     "plotly",
     "pytest",
+    "fastapi",
+    "uvicorn[standard]",
+    "pdfplumber",
+    "openpyxl",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +28,7 @@ dev = ["pytest"]
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["etl*", "config*", "dash*"]
+include = ["etl*", "config*", "dash*", "api*", "data_loader.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

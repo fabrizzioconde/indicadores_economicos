@@ -30,12 +30,33 @@ from typing import TypedDict
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 
 
-class BacenSeriesConfig(TypedDict):
+class BacenSeriesConfig(TypedDict, total=False):
     """Códigos de séries do BACEN (SGS). Chave lógica -> código numérico da API."""
 
     selic: str
     cambio: str
     ibc_br: str
+    focus_ipca12: str
+    focus_selic: str
+    reservas: str
+
+
+class BacenRealEstateSeriesConfig(TypedDict, total=False):
+    """Códigos SGS do BACEN para indicadores imobiliários/Crédito habitacional."""
+
+    ivgr: str
+    credito_imob_saldo_total_pf: str
+    credito_imob_saldo_mercado_pf: str
+    credito_imob_concessoes_mercado_pf: str
+    credito_imob_taxa_juros_mercado_pf: str
+    credito_imob_inadimplencia_mercado_pf: str
+
+
+class BacenCreditoConsumoConfig(TypedDict, total=False):
+    """Códigos SGS do BACEN para crédito ao consumidor (famílias)."""
+
+    credito_consumo_saldo_pf: str
+    credito_consumo_juros_pf: str
 
 
 class IbgeIpcaEntry(TypedDict):
@@ -45,11 +66,19 @@ class IbgeIpcaEntry(TypedDict):
     variable: str
 
 
-class IbgeIpcaConfig(TypedDict):
-    """Configuração por indicador (IPCA, IPCA15)."""
+class IbgeIpcaConfig(TypedDict, total=False):
+    """Configuração por indicador (IPCA, IPCA15, INPC)."""
 
     IPCA: IbgeIpcaEntry
     IPCA15: IbgeIpcaEntry
+    INPC: IbgeIpcaEntry
+
+
+class IbgePnadEntry(TypedDict):
+    """Entrada de config PNAD: tabela e variável SIDRA (período trimestral)."""
+
+    table: str
+    variable: str
 
 
 class Settings:
@@ -71,6 +100,33 @@ class Settings:
         "selic": "432",
         "cambio": "1",
         "ibc_br": "24364",
+        "focus_ipca12": "27574",   # Expectativa FOCUS IPCA 12 meses (%)
+        "focus_selic": "27573",    # Expectativa FOCUS SELIC (% a.a., em pontos base)
+        "reservas": "13982",      # Reservas internacionais - conceito liquidez - total (diária); 3543 retorna 404 para períodos recentes
+    }
+
+    # -------------------------------------------------------------------------
+    # Mercado imobiliário (BACEN/SGS)
+    # -------------------------------------------------------------------------
+    # IVG-R: Índice de Valores de Garantia de Imóveis Residenciais Financiados (mensal)
+    # Crédito imobiliário: séries mensais (recursos direcionados / PF) e recortes "taxas de mercado"
+    bacen_real_estate_series: BacenRealEstateSeriesConfig = {
+        "ivgr": "21340",
+        "credito_imob_saldo_total_pf": "20612",
+        "credito_imob_saldo_mercado_pf": "20611",
+        "credito_imob_concessoes_mercado_pf": "20702",
+        "credito_imob_taxa_juros_mercado_pf": "20772",
+        "credito_imob_inadimplencia_mercado_pf": "21149",
+    }
+
+    # -------------------------------------------------------------------------
+    # Crédito ao consumidor (BACEN/SGS) – varejo PME
+    # -------------------------------------------------------------------------
+    # 20542: Saldo da carteira de crédito - Pessoas físicas - Total (R$ milhões)
+    # 4189: Taxa de juros - Operações de crédito - Pessoas físicas - Total (% a.m.)
+    bacen_credito_consumo_series: BacenCreditoConsumoConfig = {
+        "credito_consumo_saldo_pf": "20542",
+        "credito_consumo_juros_pf": "4189",
     }
 
     # -------------------------------------------------------------------------
@@ -78,9 +134,52 @@ class Settings:
     # -------------------------------------------------------------------------
     # Tabela 1737: IPCA série histórica Brasil; variável 63 = variação mensal (%).
     # Tabela 3065: IPCA-15 série histórica Brasil; variável 355 = variação mensal (%).
+    # Tabela 1736: INPC série histórica Brasil; variável 44 = variação mensal (%).
     ibge_ipca_config: IbgeIpcaConfig = {
         "IPCA": {"table": "1737", "variable": "63"},
         "IPCA15": {"table": "3065", "variable": "355"},
+        "INPC": {"table": "1736", "variable": "44"},
+    }
+
+    # -------------------------------------------------------------------------
+    # PNAD Contínua (trimestral) – API SIDRA
+    # -------------------------------------------------------------------------
+    # Tabela 4093: PNAD Contínua trimestral; variável 4099 = taxa de desocupação (%).
+    ibge_pnad_config: dict[str, IbgePnadEntry] = {
+        "DESOCUPACAO": {"table": "4093", "variable": "4099"},
+    }
+
+    # -------------------------------------------------------------------------
+    # Demanda doméstica (PMC e PMS) – API SIDRA
+    # -------------------------------------------------------------------------
+    # PMC (Pesquisa Mensal de Comércio):
+    # - 8880: comércio varejista (2022=100)
+    # - 8881: comércio varejista ampliado (2022=100)
+    # Variáveis úteis (volume): 11708 = variação M/M-1 com ajuste sazonal (%).
+    #
+    # PMS (Pesquisa Mensal de Serviços):
+    # - 8161: volume de serviços (2014=100)
+    # Variáveis úteis (volume): 11623 = variação M/M-1 com ajuste sazonal (%).
+    # Observação importante: estas tabelas possuem a classificação C11046
+    # ("Tipos de índice") sem categoria "Total". Se C11046 não for informada
+    # na consulta, a API retorna ".." (não se aplica) para todos os valores.
+    # Para demanda doméstica usamos volume (e não receita nominal).
+    ibge_demanda_config: dict[str, dict[str, object]] = {
+        "PMC_VAREJO_RESTRITO_MOM_SA": {
+            "table": "8880",
+            "variable": "11708",
+            "classifications": {"c11046": "56734"},  # volume de vendas
+        },
+        "PMC_VAREJO_AMPLIADO_MOM_SA": {
+            "table": "8881",
+            "variable": "11708",
+            "classifications": {"c11046": "56736"},  # volume de vendas (ampliado)
+        },
+        "PMS_SERVICOS_MOM_SA": {
+            "table": "5906",
+            "variable": "11623",
+            "classifications": {"c11046": "56726"},  # volume de serviços
+        },
     }
 
     # -------------------------------------------------------------------------
@@ -194,6 +293,8 @@ PROCESSED_DIR: Path = settings.processed_dir
 GOLD_DIR: Path = settings.gold_dir
 
 BACEN_SERIES: BacenSeriesConfig = settings.bacen_series
+BACEN_RE_SERIES: BacenRealEstateSeriesConfig = settings.bacen_real_estate_series
+BACEN_CREDITO_CONSUMO_SERIES: BacenCreditoConsumoConfig = settings.bacen_credito_consumo_series
 IBGE_IPCA_CONFIG: IbgeIpcaConfig = settings.ibge_ipca_config
 
 DEFAULT_START_DATE: str = settings.default_start_date
